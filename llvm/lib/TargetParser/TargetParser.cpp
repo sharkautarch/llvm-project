@@ -18,6 +18,53 @@
 using namespace llvm;
 using namespace AMDGPU;
 
+/// Find KV in array using binary search.
+static const BasicSubtargetSubTypeKV *
+find(StringRef S, ArrayRef<BasicSubtargetSubTypeKV> A) {
+  // Binary search the array
+  auto F = llvm::lower_bound(A, S);
+  // If not found then return NULL
+  if (F == A.end() || StringRef(F->Key) != S)
+    return nullptr;
+  // Return the found array item
+  return F;
+}
+
+/// For each feature that is (transitively) implied by this feature, set it.
+static void setImpliedBits(FeatureBitset &Bits, const FeatureBitset &Implies,
+                           ArrayRef<BasicSubtargetFeatureKV> FeatureTable) {
+  // OR the Implies bits in outside the loop. This allows the Implies for CPUs
+  // which might imply features not in FeatureTable to use this.
+  Bits |= Implies;
+  for (const auto &FE : FeatureTable)
+    if (Implies.test(FE.Value))
+      setImpliedBits(Bits, FE.Implies.getAsBitset(), FeatureTable);
+}
+
+std::optional<llvm::StringMap<bool>> llvm::getCPUDefaultTargetFeatures(
+    StringRef CPU, ArrayRef<BasicSubtargetSubTypeKV> ProcDesc,
+    ArrayRef<BasicSubtargetFeatureKV> ProcFeatures) {
+  if (CPU.empty())
+    return std::nullopt;
+
+  const BasicSubtargetSubTypeKV *CPUEntry = ::find(CPU, ProcDesc);
+  if (!CPUEntry)
+    return std::nullopt;
+
+  // Set the features implied by this CPU feature if there is a match.
+  FeatureBitset Bits;
+  llvm::StringMap<bool> DefaultFeatures;
+  setImpliedBits(Bits, CPUEntry->Implies.getAsBitset(), ProcFeatures);
+
+  [[maybe_unused]] unsigned BitSize = Bits.size();
+  for (const BasicSubtargetFeatureKV &FE : ProcFeatures) {
+    assert(FE.Value < BitSize && "Target Feature is out of range");
+    if (Bits[FE.Value])
+      DefaultFeatures[FE.Key] = true;
+  }
+  return DefaultFeatures;
+}
+
 namespace {
 
 struct GPUInfo {
@@ -104,8 +151,6 @@ constexpr GPUInfo AMDGCNGPUs[] = {
     {{"gfx909"},    {"gfx909"},  GK_GFX909,  FEATURE_FAST_FMA_F32|FEATURE_FAST_DENORMAL_F32|FEATURE_XNACK},
     {{"gfx90a"},    {"gfx90a"},  GK_GFX90A,  FEATURE_FAST_FMA_F32|FEATURE_FAST_DENORMAL_F32|FEATURE_XNACK|FEATURE_SRAMECC},
     {{"gfx90c"},    {"gfx90c"},  GK_GFX90C,  FEATURE_FAST_FMA_F32|FEATURE_FAST_DENORMAL_F32|FEATURE_XNACK},
-    {{"gfx940"},    {"gfx940"},  GK_GFX940,  FEATURE_FAST_FMA_F32|FEATURE_FAST_DENORMAL_F32|FEATURE_XNACK|FEATURE_SRAMECC},
-    {{"gfx941"},    {"gfx941"},  GK_GFX941,  FEATURE_FAST_FMA_F32|FEATURE_FAST_DENORMAL_F32|FEATURE_XNACK|FEATURE_SRAMECC},
     {{"gfx942"},    {"gfx942"},  GK_GFX942,  FEATURE_FAST_FMA_F32|FEATURE_FAST_DENORMAL_F32|FEATURE_XNACK|FEATURE_SRAMECC},
     {{"gfx950"},    {"gfx950"},  GK_GFX950,  FEATURE_FAST_FMA_F32|FEATURE_FAST_DENORMAL_F32|FEATURE_XNACK|FEATURE_SRAMECC},
     {{"gfx1010"},   {"gfx1010"}, GK_GFX1010, FEATURE_FAST_FMA_F32|FEATURE_FAST_DENORMAL_F32|FEATURE_WAVE32|FEATURE_XNACK|FEATURE_WGP},
@@ -260,8 +305,6 @@ AMDGPU::IsaVersion AMDGPU::getIsaVersion(StringRef GPU) {
   case GK_GFX909:  return {9, 0, 9};
   case GK_GFX90A:  return {9, 0, 10};
   case GK_GFX90C:  return {9, 0, 12};
-  case GK_GFX940:  return {9, 4, 0};
-  case GK_GFX941:  return {9, 4, 1};
   case GK_GFX942:  return {9, 4, 2};
   case GK_GFX950:  return {9, 5, 0};
   case GK_GFX1010: return {10, 1, 0};
@@ -378,6 +421,7 @@ void AMDGPU::fillAMDGPUFeatureMap(StringRef GPU, const Triple &T,
     Features["prng-inst"] = true;
     Features["wavefrontsize32"] = true;
     Features["wavefrontsize64"] = true;
+    Features["vmem-to-lds-load-insts"] = true;
   } else if (T.isAMDGCN()) {
     AMDGPU::GPUKind Kind = parseArchAMDGCN(GPU);
     switch (Kind) {
@@ -463,6 +507,7 @@ void AMDGPU::fillAMDGPUFeatureMap(StringRef GPU, const Triple &T,
       Features["s-memrealtime"] = true;
       Features["s-memtime-inst"] = true;
       Features["gws"] = true;
+      Features["vmem-to-lds-load-insts"] = true;
       break;
     case GK_GFX1012:
     case GK_GFX1011:
@@ -487,6 +532,7 @@ void AMDGPU::fillAMDGPUFeatureMap(StringRef GPU, const Triple &T,
       Features["s-memrealtime"] = true;
       Features["s-memtime-inst"] = true;
       Features["gws"] = true;
+      Features["vmem-to-lds-load-insts"] = true;
       break;
     case GK_GFX950:
       Features["bitop3-insts"] = true;
@@ -506,8 +552,6 @@ void AMDGPU::fillAMDGPUFeatureMap(StringRef GPU, const Triple &T,
       Features["gfx950-insts"] = true;
       [[fallthrough]];
     case GK_GFX942:
-    case GK_GFX941:
-    case GK_GFX940:
       Features["fp8-insts"] = true;
       Features["fp8-conversion-insts"] = true;
       if (Kind != GK_GFX950)
@@ -539,6 +583,7 @@ void AMDGPU::fillAMDGPUFeatureMap(StringRef GPU, const Triple &T,
       Features["ci-insts"] = true;
       Features["s-memtime-inst"] = true;
       Features["gws"] = true;
+      Features["vmem-to-lds-load-insts"] = true;
       break;
     case GK_GFX90A:
       Features["gfx90a-insts"] = true;
@@ -566,6 +611,7 @@ void AMDGPU::fillAMDGPUFeatureMap(StringRef GPU, const Triple &T,
     case GK_GFX900:
     case GK_GFX9_GENERIC:
       Features["gfx9-insts"] = true;
+      Features["vmem-to-lds-load-insts"] = true;
       [[fallthrough]];
     case GK_GFX810:
     case GK_GFX805:

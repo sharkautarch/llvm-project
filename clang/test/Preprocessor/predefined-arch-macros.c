@@ -2102,7 +2102,7 @@
 // CHECK_ADL_M32: #define __AVX__ 1
 // CHECK_ADL_M32: #define __BMI2__ 1
 // CHECK_ADL_M32: #define __BMI__ 1
-// CHECK_ADL_M32: #define __CLDEMOTE__ 1
+// CHECK_ADL_M32-NOT: #define __CLDEMOTE__ 1
 // CHECK_ADL_M32: #define __CLFLUSHOPT__ 1
 // CHECK_ADL_M32: #define __CLWB__ 1
 // CHECK_ADL_M32: #define __F16C__ 1
@@ -2173,7 +2173,7 @@
 // CHECK_ADL_M64: #define __AVX__ 1
 // CHECK_ADL_M64: #define __BMI2__ 1
 // CHECK_ADL_M64: #define __BMI__ 1
-// CHECK_ADL_M64: #define __CLDEMOTE__ 1
+// CHECK_ADL_M64-NOT: #define __CLDEMOTE__ 1
 // CHECK_ADL_M64: #define __CLFLUSHOPT__ 1
 // CHECK_ADL_M64: #define __CLWB__ 1
 // CHECK_ADL_M64: #define __F16C__ 1
@@ -4392,6 +4392,9 @@
 // CHECK_SYSTEMZ_ARCH14: #define __zarch__ 1
 
 // RUN: %clang -march=arch15 -E -dM %s -o - 2>&1 \
+// RUN:     -target s390x-unknown-linux \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_SYSTEMZ_ARCH15
+// RUN: %clang -march=z17 -E -dM %s -o - 2>&1 \
 // RUN:     -target s390x-unknown-linux \
 // RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_SYSTEMZ_ARCH15
 // CHECK_SYSTEMZ_ARCH15: #define __ARCH__ 15

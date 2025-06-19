@@ -347,6 +347,7 @@ def Vector_MultiDimReductionOp :
 
 def Vector_BroadcastOp :
   Vector_Op<"broadcast", [Pure,
+     DeclareOpInterfaceMethods<VectorUnrollOpInterface, ["getShapeForUnroll"]>,
      DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>,
      PredOpTrait<"source operand and result have same element type",
                  TCresVTEtIsSameAsOpBase<0, 0>>]>,
@@ -644,11 +645,13 @@ def Vector_ExtractElementOp :
     Results<(outs AnyType:$result)> {
   let summary = "extractelement operation";
   let description = [{
+    Note: This operation is deprecated. Please use vector.extract insert.
+
     Takes a 0-D or 1-D vector and a optional dynamic index position and
     extracts the scalar at that position.
 
     Note that this instruction resembles vector.extract, but is restricted to
-    0-D and 1-D vectors and relaxed to dynamic indices.
+    0-D and 1-D vectors.
     If the vector is 0-D, the position must be std::nullopt.
 
 
@@ -716,6 +719,8 @@ def Vector_ExtractOp :
   let results = (outs AnyType:$result);
 
   let builders = [
+    // Builder to extract a scalar from a rank-0 vector.
+    OpBuilder<(ins "Value":$source)>,
     OpBuilder<(ins "Value":$source, "int64_t":$position)>,
     OpBuilder<(ins "Value":$source, "OpFoldResult":$position)>,
     OpBuilder<(ins "Value":$source, "ArrayRef<int64_t>":$position)>,
@@ -785,40 +790,89 @@ def Vector_FMAOp :
   }];
 }
 
+def Vector_ToElementsOp : Vector_Op<"to_elements", [
+    Pure,
+    ShapedTypeMatchesElementCountAndTypes<"source", "elements">]> {
+  let summary = "operation that decomposes a vector into all its scalar elements";
+  let description = [{
+    This operation decomposes all the scalar elements from a vector. The
+    decomposed scalar elements are returned in row-major order. The number of
+    scalar results must match the number of elements in the input vector type.
+    All the result elements have the same result type, which must match the
+    element type of the input vector. Scalable vectors are not supported.
+
+    Examples:
+
+    ```mlir
+    // Decompose a 0-D vector.
+    %0 = vector.to_elements %v0 : vector<f32>
+    // %0 = %v0[0]
+
+    // Decompose a 1-D vector.
+    %0:2 = vector.to_elements %v1 : vector<2xf32>
+    // %0#0 = %v1[0]
+    // %0#1 = %v1[1]
+
+    // Decompose a 2-D.
+    %0:6 = vector.to_elements %v2 : vector<2x3xf32>
+    // %0#0 = %v2[0, 0]
+    // %0#1 = %v2[0, 1]
+    // %0#2 = %v2[0, 2]
+    // %0#3 = %v2[1, 0]
+    // %0#4 = %v2[1, 1]
+    // %0#5 = %v2[1, 2]
+
+    // Decompose a 3-D vector.
+    %0:6 = vector.to_elements %v3 : vector<3x1x2xf32>
+    // %0#0 = %v3[0, 0, 0]
+    // %0#1 = %v3[0, 0, 1]
+    // %0#2 = %v3[1, 0, 0]
+    // %0#3 = %v3[1, 0, 1]
+    // %0#4 = %v3[2, 0, 0]
+    // %0#5 = %v3[2, 0, 1]
+    ```
+  }];
+
+  let arguments = (ins AnyVectorOfAnyRank:$source);
+  let results = (outs Variadic<AnyType>:$elements);
+  let assemblyFormat = "$source attr-dict `:` type($source)";
+}
+
 def Vector_FromElementsOp : Vector_Op<"from_elements", [
     Pure,
-    TypesMatchWith<"operand types match result element type",
-                   "result", "elements", "SmallVector<Type>("
-                   "::llvm::cast<VectorType>($_self).getNumElements(), "
-                   "::llvm::cast<VectorType>($_self).getElementType())">]> {
+    ShapedTypeMatchesElementCountAndTypes<"dest", "elements">]> {
   let summary = "operation that defines a vector from scalar elements";
   let description = [{
     This operation defines a vector from one or multiple scalar elements. The
-    number of elements must match the number of elements in the result type.
-    All elements must have the same type, which must match the element type of
-    the result vector type.
+    scalar elements are arranged in row-major within the vector. The number of
+    elements must match the number of elements in the result type. All elements
+    must have the same type, which must match the element type of the result
+    vector type. Scalable vectors are not supported.
 
-    `elements` are a flattened version of the result vector in row-major order.
-
-    Example:
+    Examples:
 
     ```mlir
-    // %f1
+    // Define a 0-D vector.
     %0 = vector.from_elements %f1 : vector<f32>
-    // [%f1, %f2]
-    %1 = vector.from_elements %f1, %f2 : vector<2xf32>
-    // [[%f1, %f2, %f3], [%f4, %f5, %f6]]
-    %2 = vector.from_elements %f1, %f2, %f3, %f4, %f5, %f6 : vector<2x3xf32>
-    // [[[%f1, %f2]], [[%f3, %f4]], [[%f5, %f6]]]
-    %3 = vector.from_elements %f1, %f2, %f3, %f4, %f5, %f6 : vector<3x1x2xf32>
-    ```
+    // [%f1]
 
-    Note, scalable vectors are not supported.
+    // Define a 1-D vector.
+    %1 = vector.from_elements %f1, %f2 : vector<2xf32>
+    // [%f1, %f2]
+
+    // Define a 2-D vector.
+    %2 = vector.from_elements %f1, %f2, %f3, %f4, %f5, %f6 : vector<2x3xf32>
+    // [[%f1, %f2, %f3], [%f4, %f5, %f6]]
+
+    // Define a 3-D vector.
+    %3 = vector.from_elements %f1, %f2, %f3, %f4, %f5, %f6 : vector<3x1x2xf32>
+    // [[[%f1, %f2]], [[%f3, %f4]], [[%f5, %f6]]]
+    ```
   }];
 
   let arguments = (ins Variadic<AnyType>:$elements);
-  let results = (outs AnyFixedVectorOfAnyRank:$result);
-  let assemblyFormat = "$elements attr-dict `:` type($result)";
+  let results = (outs AnyFixedVectorOfAnyRank:$dest);
+  let assemblyFormat = "$elements attr-dict `:` type($dest)";
   let hasCanonicalizer = 1;
 }
 
@@ -834,11 +888,13 @@ def Vector_InsertElementOp :
      Results<(outs AnyVectorOfAnyRank:$result)> {
   let summary = "insertelement operation";
   let description = [{
+    Note: This operation is deprecated. Please use vector.insert instead.
+
     Takes a scalar source, a 0-D or 1-D destination vector and a dynamic index
     position and inserts the source into the destination at the proper position.
 
     Note that this instruction resembles vector.insert, but is restricted to 0-D
-    and 1-D vectors and relaxed to dynamic indices.
+    and 1-D vectors.
 
     It is meant to be closer to LLVM's version:
     https://llvm.org/docs/LangRef.html#insertelement-instruction
@@ -901,7 +957,7 @@ def Vector_InsertOp :
   }];
 
   let arguments = (ins
-    AnyType:$source,
+    AnyType:$valueToStore,
     AnyVectorOfAnyRank:$dest,
     Variadic<Index>:$dynamic_position,
     DenseI64ArrayAttr:$static_position
@@ -909,14 +965,16 @@ def Vector_InsertOp :
   let results = (outs AnyVectorOfAnyRank:$result);
 
   let builders = [
-    OpBuilder<(ins "Value":$source, "Value":$dest, "int64_t":$position)>,
-    OpBuilder<(ins "Value":$source, "Value":$dest, "OpFoldResult":$position)>,
-    OpBuilder<(ins "Value":$source, "Value":$dest, "ArrayRef<int64_t>":$position)>,
-    OpBuilder<(ins "Value":$source, "Value":$dest, "ArrayRef<OpFoldResult>":$position)>,
+    // Builder to insert a scalar/rank-0 vector into a rank-0 vector.
+    OpBuilder<(ins "Value":$valueToStore, "Value":$dest)>,
+    OpBuilder<(ins "Value":$valueToStore, "Value":$dest, "int64_t":$position)>,
+    OpBuilder<(ins "Value":$valueToStore, "Value":$dest, "OpFoldResult":$position)>,
+    OpBuilder<(ins "Value":$valueToStore, "Value":$dest, "ArrayRef<int64_t>":$position)>,
+    OpBuilder<(ins "Value":$valueToStore, "Value":$dest, "ArrayRef<OpFoldResult>":$position)>,
   ];
 
   let extraClassDeclaration = extraPoisonClassDeclaration # [{
-    Type getSourceType() { return getSource().getType(); }
+    Type getValueToStoreType() { return getValueToStore().getType(); }
     VectorType getDestVectorType() {
       return ::llvm::cast<VectorType>(getDest().getType());
     }
@@ -938,8 +996,8 @@ def Vector_InsertOp :
   }];
 
   let assemblyFormat = [{
-    $source `,` $dest custom<DynamicIndexList>($dynamic_position, $static_position)
-    attr-dict `:` type($source) `into` type($dest)
+    $valueToStore `,` $dest custom<DynamicIndexList>($dynamic_position, $static_position)
+    attr-dict `:` type($valueToStore) `into` type($dest)
   }];
 
   let hasCanonicalizer = 1;
@@ -949,16 +1007,16 @@ def Vector_InsertOp :
 
 def Vector_ScalableInsertOp :
   Vector_Op<"scalable.insert", [Pure,
-       AllElementTypesMatch<["source", "dest"]>,
-       AllTypesMatch<["dest", "res"]>,
+       AllElementTypesMatch<["valueToStore", "dest"]>,
+       AllTypesMatch<["dest", "result"]>,
        PredOpTrait<"position is a multiple of the source length.",
         CPred<
           "(getPos() % getSourceVectorType().getNumElements()) == 0"
         >>]>,
-     Arguments<(ins VectorOfRank<[1]>:$source,
+     Arguments<(ins VectorOfRank<[1]>:$valueToStore,
                     ScalableVectorOfRank<[1]>:$dest,
                     I64Attr:$pos)>,
-     Results<(outs ScalableVectorOfRank<[1]>:$res)> {
+     Results<(outs ScalableVectorOfRank<[1]>:$result)> {
   let summary = "insert subvector into scalable vector operation";
   // NOTE: This operation is designed to map to `llvm.vector.insert`, and its
   //       documentation should be kept aligned with LLVM IR:
@@ -991,29 +1049,33 @@ def Vector_ScalableInsertOp :
   }];
 
   let assemblyFormat = [{
-    $source `,` $dest `[` $pos `]` attr-dict `:` type($source) `into` type($dest)
+    $valueToStore `,` $dest `[` $pos `]` attr-dict `:` type($valueToStore) `into` type($dest)
   }];
 
   let extraClassDeclaration = extraPoisonClassDeclaration # [{
     VectorType getSourceVectorType() {
-      return ::llvm::cast<VectorType>(getSource().getType());
+      return ::llvm::cast<VectorType>(getValueToStore().getType());
     }
     VectorType getDestVectorType() {
       return ::llvm::cast<VectorType>(getDest().getType());
+    }
+    /// Wrapper for getResult, which replaced getRes.
+    [[deprecated("Use getResult instead!")]] ::mlir::Value getRes() {
+      return getResult();
     }
   }];
 }
 
 def Vector_ScalableExtractOp :
   Vector_Op<"scalable.extract", [Pure,
-       AllElementTypesMatch<["source", "res"]>,
+       AllElementTypesMatch<["source", "result"]>,
        PredOpTrait<"position is a multiple of the result length.",
         CPred<
           "(getPos() % getResultVectorType().getNumElements()) == 0"
         >>]>,
      Arguments<(ins ScalableVectorOfRank<[1]>:$source,
                     I64Attr:$pos)>,
-     Results<(outs VectorOfRank<[1]>:$res)> {
+     Results<(outs VectorOfRank<[1]>:$result)> {
   let summary = "extract subvector from scalable vector operation";
   // NOTE: This operation is designed to map to `llvm.vector.extract`, and its
   //       documentation should be kept aligned with LLVM IR:
@@ -1042,7 +1104,7 @@ def Vector_ScalableExtractOp :
   }];
 
   let assemblyFormat = [{
-    $source `[` $pos `]` attr-dict `:` type($res) `from` type($source)
+    $source `[` $pos `]` attr-dict `:` type($result) `from` type($source)
   }];
 
   let extraClassDeclaration = extraPoisonClassDeclaration # [{
@@ -1050,7 +1112,11 @@ def Vector_ScalableExtractOp :
       return ::llvm::cast<VectorType>(getSource().getType());
     }
     VectorType getResultVectorType() {
-      return ::llvm::cast<VectorType>(getRes().getType());
+      return ::llvm::cast<VectorType>(getResult().getType());
+    }
+    /// Wrapper for getResult, which replaced getRes.
+    [[deprecated("Use getResult instead!")]] ::mlir::Value getRes() {
+      return getResult();
     }
   }];
 }
@@ -1059,21 +1125,21 @@ def Vector_InsertStridedSliceOp :
   Vector_Op<"insert_strided_slice", [Pure,
     PredOpTrait<"operand #0 and result have same element type",
                  TCresVTEtIsSameAsOpBase<0, 0>>,
-    AllTypesMatch<["dest", "res"]>]>,
-    Arguments<(ins AnyVectorOfNonZeroRank:$source, AnyVectorOfNonZeroRank:$dest, I64ArrayAttr:$offsets,
+    AllTypesMatch<["dest", "result"]>]>,
+    Arguments<(ins AnyVectorOfNonZeroRank:$valueToStore, AnyVectorOfNonZeroRank:$dest, I64ArrayAttr:$offsets,
                I64ArrayAttr:$strides)>,
-    Results<(outs AnyVectorOfNonZeroRank:$res)> {
+    Results<(outs AnyVectorOfNonZeroRank:$result)> {
   let summary = "strided_slice operation";
   let description = [{
-    Takes a k-D source vector, an n-D destination vector (n >= k), n-sized
+    Takes a k-D valueToStore vector, an n-D destination vector (n >= k), n-sized
     `offsets` integer array attribute, a k-sized `strides` integer array attribute
-    and inserts the k-D source vector as a strided subvector at the proper offset
+    and inserts the k-D valueToStore vector as a strided subvector at the proper offset
     into the n-D destination vector.
 
     At the moment strides must contain only 1s.
 
     Returns an n-D vector that is a copy of the n-D destination vector in which
-    the last k-D dimensions contain the k-D source vector elements strided at
+    the last k-D dimensions contain the k-D valueToStore vector elements strided at
     the proper location as specified by the offsets.
 
     Example:
@@ -1086,16 +1152,17 @@ def Vector_InsertStridedSliceOp :
   }];
 
   let assemblyFormat = [{
-    $source `,` $dest attr-dict `:` type($source) `into` type($dest)
+    $valueToStore `,` $dest attr-dict `:` type($valueToStore) `into` type($dest)
   }];
 
   let builders = [
-    OpBuilder<(ins "Value":$source, "Value":$dest,
+    OpBuilder<(ins "Value":$valueToStore, "Value":$dest,
       "ArrayRef<int64_t>":$offsets, "ArrayRef<int64_t>":$strides)>
   ];
   let extraClassDeclaration = [{
+    // TODO: Rename
     VectorType getSourceVectorType() {
-      return ::llvm::cast<VectorType>(getSource().getType());
+      return ::llvm::cast<VectorType>(getValueToStore().getType());
     }
     VectorType getDestVectorType() {
       return ::llvm::cast<VectorType>(getDest().getType());
@@ -1104,6 +1171,10 @@ def Vector_InsertStridedSliceOp :
       return llvm::any_of(getStrides(), [](Attribute attr) {
         return ::llvm::cast<IntegerAttr>(attr).getInt() != 1;
       });
+    }
+    /// Wrapper for getResult, which replaced getRes.
+    [[deprecated("Use getResult instead!")]] ::mlir::Value getRes() {
+      return getResult();
     }
   }];
 
@@ -1264,7 +1335,7 @@ def Vector_TransferReadOp :
       AttrSizedOperandSegments,
       DestinationStyleOpInterface
     ]>,
-    Arguments<(ins AnyShaped:$source,
+    Arguments<(ins AnyShaped:$base,
                    Variadic<Index>:$indices,
                    AffineMapAttr:$permutation_map,
                    AnyType:$padding,
@@ -1512,8 +1583,8 @@ def Vector_TransferWriteOp :
       AttrSizedOperandSegments,
       DestinationStyleOpInterface
   ]>,
-    Arguments<(ins AnyVectorOfAnyRank:$vector,
-                   AnyShaped:$source,
+    Arguments<(ins AnyVectorOfAnyRank:$valueToStore,
+                   AnyShaped:$base,
                    Variadic<Index>:$indices,
                    AffineMapAttr:$permutation_map,
                    Optional<VectorOfNonZeroRankOf<[I1]>>:$mask,
@@ -1654,7 +1725,7 @@ def Vector_TransferWriteOp :
     ///  ops of other dialects.
     Value getValue() { return getVector(); }
 
-    MutableOperandRange getDpsInitsMutable() { return getSourceMutable(); }
+    MutableOperandRange getDpsInitsMutable() { return getBaseMutable(); }
   }];
 
   let hasFolder = 1;
@@ -1963,7 +2034,7 @@ def Vector_GatherOp :
     DeclareOpInterfaceMethods<MaskableOpInterface>,
     DeclareOpInterfaceMethods<VectorUnrollOpInterface, ["getShapeForUnroll"]>
   ]>,
-    Arguments<(ins Arg<AnyShaped, "", [MemRead]>:$base,
+    Arguments<(ins Arg<TensorOrMemRef<[AnyType]>, "", [MemRead]>:$base,
                Variadic<Index>:$indices,
                VectorOfNonZeroRankOf<[AnyInteger, Index]>:$index_vec,
                VectorOfNonZeroRankOf<[I1]>:$mask,
@@ -2030,9 +2101,9 @@ def Vector_ScatterOp :
   Vector_Op<"scatter">,
     Arguments<(ins Arg<AnyMemRef, "", [MemWrite]>:$base,
                Variadic<Index>:$indices,
-               VectorOfRankAndType<[1], [AnyInteger, Index]>:$index_vec,
-               VectorOfRankAndType<[1], [I1]>:$mask,
-               VectorOfRank<[1]>:$valueToStore)> {
+               VectorOfNonZeroRankOf<[AnyInteger, Index]>:$index_vec,
+               VectorOfNonZeroRankOf<[I1]>:$mask,
+               AnyVectorOfNonZeroRank:$valueToStore)> {
 
   let summary = [{
     scatters elements from a vector into memory as defined by an index vector
@@ -2040,9 +2111,9 @@ def Vector_ScatterOp :
   }];
 
   let description = [{
-    The scatter operation stores elements from a 1-D vector into memory as
-    defined by a base with indices and an additional 1-D index vector, but
-    only if the corresponding bit in a 1-D mask vector is set. Otherwise, no
+    The scatter operation stores elements from a n-D vector into memory as
+    defined by a base with indices and an additional n-D index vector, but
+    only if the corresponding bit in a n-D mask vector is set. Otherwise, no
     action is taken for that element. Informally the semantics are:
     ```
     if (mask[0]) base[index[0]] = value[0]
@@ -2235,18 +2306,8 @@ def Vector_ShapeCastOp :
     Results<(outs AnyVectorOfAnyRank:$result)> {
   let summary = "shape_cast casts between vector shapes";
   let description = [{
-    The shape_cast operation casts between an n-D source vector shape and
-    a k-D result vector shape (the element type remains the same).
-
-    If reducing rank (n > k), result dimension sizes must be a product
-    of contiguous source dimension sizes.
-    If expanding rank (n < k), source dimensions must factor into a
-    contiguous sequence of destination dimension sizes.
-    Each source dim is expanded (or contiguous sequence of source dims combined)
-    in source dimension list order (i.e. 0 <= i < n), to produce a contiguous
-    sequence of result dims (or a single result dim), in result dimension list
-    order (i.e. 0 <= j < k). The product of all source dimension sizes and all
-    result dimension sizes must match.
+    Casts to a vector with the same number of elements, element type, and
+    number of scalable dimensions.
 
     It is currently assumed that this operation does not require moving data,
     and that it will be folded away before lowering vector operations.
@@ -2256,15 +2317,13 @@ def Vector_ShapeCastOp :
     2-D MLIR vector to a 1-D flattened LLVM vector.shape_cast lowering to LLVM
     is supported in that particular case, for now.
 
-    Example:
+    Examples:
 
     ```mlir
-    // Example casting to a lower vector rank.
-    %1 = vector.shape_cast %0 : vector<5x1x4x3xf32> to vector<20x3xf32>
+    %1 = vector.shape_cast %0 : vector<4x3xf32> to vector<3x2x2xf32>
 
-    // Example casting to a higher vector rank.
-    %3 = vector.shape_cast %2 : vector<10x12x8xf32> to vector<5x2x3x4x8xf32>
-
+    // with 2 scalable dimensions (number of which must be preserved).
+    %3 = vector.shape_cast %2 : vector<[2]x3x[4]xi8> to vector<3x[1]x[8]xi8>
     ```
   }];
   let extraClassDeclaration = [{
@@ -2485,8 +2544,13 @@ def Vector_MaskOp : Vector_Op<"mask", [
     masked. Values used within the region are captured from above. Only one
     *maskable* operation can be masked with a `vector.mask` operation at a time.
     An operation is *maskable* if it implements the `MaskableOpInterface`. The
-    terminator yields all results of the maskable operation to the result of
-    this operation.
+    terminator yields all results from the maskable operation to the result of
+    this operation. No other values are allowed to be yielded.
+
+    An empty `vector.mask` operation is currently legal to enable optimizations
+    across the `vector.mask` region. However, this might change in the future
+    once vector transformations gain better support for `vector.mask`.
+    TODO: Consider making empty `vector.mask` illegal.
 
     The vector mask argument holds a bit for each vector lane and determines
     which vector lanes should execute the maskable operation and which ones

@@ -112,6 +112,10 @@ public:
   void MapDeclDIEToDefDIE(const lldb_private::plugin::dwarf::DWARFDIE &decl_die,
                           const lldb_private::plugin::dwarf::DWARFDIE &def_die);
 
+  lldb_private::plugin::dwarf::DWARFDIE GetCXXObjectParameter(
+      const lldb_private::plugin::dwarf::DWARFDIE &subprogram,
+      const lldb_private::plugin::dwarf::DWARFDIE &decl_ctx_die);
+
 protected:
   /// Protected typedefs and members.
   /// @{
@@ -449,7 +453,7 @@ private:
   ///
   /// \returns true on success
   bool
-  ParseObjCMethod(const lldb_private::ObjCLanguage::MethodName &objc_method,
+  ParseObjCMethod(const lldb_private::ObjCLanguage::ObjCMethodName &objc_method,
                   const lldb_private::plugin::dwarf::DWARFDIE &die,
                   lldb_private::CompilerType clang_type,
                   const ParsedDWARFTypeAttributes &attrs, bool is_variadic);
