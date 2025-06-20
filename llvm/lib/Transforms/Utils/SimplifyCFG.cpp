@@ -2254,6 +2254,9 @@ static void sinkCandidatesImpl(BasicBlock *BBEnd,
                                ArrayRef<Instruction *> Insts, 
                                bool allowOtherInstsToHaveNonDbgUsers = false);
 
+// Assuming canSinkInstructions(Blocks) has returned true, sink the last
+// instruction of every block in Blocks to their common successor, commoning
+// into one instruction.
 static void sinkLastInstruction(ArrayRef<BasicBlock*> Blocks) {
   auto *BBEnd = Blocks[0]->getTerminator()->getSuccessor(0);
 
@@ -2809,7 +2812,7 @@ static bool herusticPhiSinker(BasicBlock *BB, DomTreeUpdater *DTU) {
         }
         dbgs() << "\n";
       }
-    });
+    }());
     sinkCandidatesImpl(BB, Preds, SinkCandidates, true);
 
     BaseCandidatesToSkip.push_back(SinkCandidates[0]);
