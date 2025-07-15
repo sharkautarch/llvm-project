@@ -2757,7 +2757,7 @@ herusticGetPhiGEPCandidate(SmallVectorImpl<Instruction *> &ResultsSinkCandidate,
       }
       auto BaseCandidate = cast<GetElementPtrInst>(Candidates[0]); 
       auto BasePtr = BaseCandidate->getOperand(0);
-      return candidate->getOperand(0) == BasePtr && candidate->getResultElementType() == BaseCandidate->getResultElementType();
+      return candidate->getOperand(0) == BasePtr;
 		};
 
     for (auto IncomingValue : IncomingValues) {
