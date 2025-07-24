@@ -2282,13 +2282,7 @@ static void sinkCandidatesImpl(BasicBlock *BBEnd,
   // have done it all for us.
   SmallVector<Value*, 4> NewOperands;
   Instruction *I0 = Insts.front();
-  enum LocalPhiWarningKinds : uint8_t {
-    WarningNone = 0b000,
-    ParentlessPhi = 0b001,
-    UselessPhi = 0b010,
-    ParentlessInst = 0b100
-  };
-  uint8_t warnings{LocalPhiWarningKinds::WarningNone};
+
   for (unsigned O = 0, E = I0->getNumOperands(); O != E; ++O) {
     // This check is different to that in canSinkInstructions. There, we
     // cared about the global view once simplifycfg (and instcombine) have
@@ -2311,10 +2305,6 @@ static void sinkCandidatesImpl(BasicBlock *BBEnd,
         PHINode::Create(Op->getType(), Insts.size(), Op->getName() + ".sink");
     PN->insertBefore(BBEnd->begin());
     for (decltype(Insts.size()) i = 0, E = Insts.size(); i < E; i++) {
-      if (PN->getType() != Insts[i]->getOperand(O)->getType()) {
-        LLVM_DEBUG(dbgs() << "PN: " << PN << " -- type: " << PN->getType());
-        LLVM_DEBUG(dbgs() << "Insts[" << i << "]->getOperand("<<O<<"): " << Insts[i]->getOperand(O) << " -- type: " << Insts[i]->getOperand(O)->getType());
-      }
       PN->addIncoming(Insts[i]->getOperand(O), IncomingBBs[i]);
     }
     NewOperands.push_back(PN);
@@ -2358,37 +2348,19 @@ static void sinkCandidatesImpl(BasicBlock *BBEnd,
         continue;
     }
     
-    uint8_t warningLocal = PN->use_empty() ? LocalPhiWarningKinds::UselessPhi : LocalPhiWarningKinds::WarningNone;
-    static_assert(static_cast<LocalPhiWarningKinds>(true) == LocalPhiWarningKinds::ParentlessPhi);
-    warningLocal |= PN->getParent() == nullptr;
-    warnings |= warningLocal;
-
-    if (warningLocal) {
-        continue;
-    }
     PN->replaceAllUsesWith(I0);
     PN->eraseFromParent();
   }
 
   // Finally nuke all instructions apart from the common instruction.
   for (auto *I : Insts) {
-    bool isParentless = I->getParent() == nullptr;
-    warnings |= (isParentless ? LocalPhiWarningKinds::ParentlessInst : LocalPhiWarningKinds::WarningNone);
-    if (I == I0 || isParentless)
+    if (I == I0)
       continue;
     // The remaining uses are debug users, replace those with the common inst.
     // In most (all?) cases this just introduces a use-before-def.
     assert( (allowOtherInstsToHaveNonDbgUsers || I->user_empty()) && "Inst unexpectedly still has non-dbg users");
     I->replaceAllUsesWith(I0);
     I->eraseFromParent();
-  }
-  
-  if (warnings != LocalPhiWarningKinds::WarningNone) {
-    fprintf(stderr, "sinkCandidatesImpl **Non-Fatal** Warning(s): %s%s%s\n",
-     (warnings & LocalPhiWarningKinds::ParentlessPhi) ? "PN->getParent() == nullptr\n" : "",
-     (warnings & LocalPhiWarningKinds::UselessPhi) ? "PN->use_empty() == true\n" : "",
-     (warnings & LocalPhiWarningKinds::ParentlessInst) ? "I->getParent() == nullptr\n" : ""
-    );
   }
 }
 
