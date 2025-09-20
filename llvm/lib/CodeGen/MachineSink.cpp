@@ -1744,9 +1744,23 @@ bool MachineSinking::hasStoreBetween(MachineBasicBlock *From,
 bool MachineSinking::aggressivelySinkIntoCycle(
     MachineCycle *Cycle, MachineInstr &I,
     DenseMap<SinkItem, MachineInstr *> &SunkInstrs) {
-  // TODO: support instructions with multiple defs
-  if (I.getNumDefs() > 1)
-    return false;
+  // TODO: support instructions with multiple non-dead defs
+  if (I.getNumDefs() > 1) {
+    bool hasRegUse = false;
+
+    for (const MachineOperand &MO : ArrayRef<MachineOperand>(I.operands()).drop_front(1)) {
+      if (!MO.isReg())
+        continue;
+      if (MO.isUse())
+        hasRegUse = true;
+      if (MO.isDef() && !MO.isDead())
+        return false;
+    }
+    //avoid attempting to sink stuff like MOV32r0 (aka xoring reg with itself)
+    //as that seems to cause problems down the line:
+    if (!hasRegUse)
+      return false;
+  }
 
   LLVM_DEBUG(dbgs() << "AggressiveCycleSink: Finding sink block for: " << I);
   assert(Cycle->getCyclePreheader() && "Cycle sink needs a preheader block");
