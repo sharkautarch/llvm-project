@@ -740,6 +740,26 @@ static bool mayLoadFromGOTOrConstantPool(MachineInstr &MI) {
   return false;
 }
 
+static bool allButFirstDefDead(MachineInstr& MI) {
+  if (MI.getNumDefs() > 1) {
+    bool hasRegUse = false;
+    for (const MachineOperand &MO : ArrayRef<MachineOperand>(MI.operands()).drop_front(1)) {
+      if (!MO.isReg())
+        continue;
+      if (MO.isUse())
+        hasRegUse = true;
+      if (MO.isDef() && !MO.isDead())
+        return false;
+    }
+    //avoid attempting to sink stuff like MOV32r0 (aka xoring reg with itself)
+    //as that seems to cause problems down the line:
+    if (!hasRegUse)
+      return false;
+  }
+  
+  return true;
+}
+
 void MachineSinking::FindCycleSinkCandidates(
     MachineCycle *Cycle, MachineBasicBlock *BB,
     SmallVectorImpl<MachineInstr *> &Candidates) {
@@ -748,7 +768,7 @@ void MachineSinking::FindCycleSinkCandidates(
       continue;
     LLVM_DEBUG(dbgs() << "CycleSink: Analysing candidate: " << MI);
     // TODO: support instructions with multiple defs
-    if (MI.getNumDefs() > 1) {
+    if (!allButFirstDefDead(MI)) {
       LLVM_DEBUG(dbgs() << "CycleSink: not sinking multi-def instruction\n");
       continue;
     }
@@ -806,9 +826,9 @@ void MachineSinking::SortIntoUseDefChains(
     for (const MachineOperand &MO : MI->operands()) {
       if (MO.isReg()) {
         Register Reg = MO.getReg();
-        if (MO.isDef()) {
+        if (MO.isDef() && !MO.isDead()) {
           DefToInstr[Reg] = MI;
-        } else if (MO.isUse()) {
+        } else if (MO.isUse() && MO.readsReg()) {
           UseCounts[Reg]++;
           if (UseCounts[Reg] > SinkMaxFanOut) {
             LLVM_DEBUG(dbgs() << "CycleSink: Not considering sinking " << *MI
@@ -844,7 +864,7 @@ void MachineSinking::SortIntoUseDefChains(
       auto It = RegToChain.find(Reg);
       if (It != RegToChain.end())
         RelatedChains.insert(It->second);
-      else if (MO.isUse() && !CycleLiveIns.contains(Reg))
+      else if (MO.isUse() && MO.readsReg() && !CycleLiveIns.contains(Reg))
         LiveIns.insert(Reg);
     }
 
@@ -873,7 +893,7 @@ void MachineSinking::SortIntoUseDefChains(
 
         for (const MachineInstr *MovedMI : Other.Instrs) {
           for (const MachineOperand &MO : MovedMI->operands()) {
-            if (!MO.isReg())
+            if (!MO.isReg() || (MO.isDef() && MO.isDead()))
               continue;
             Register Reg = MO.getReg();
             if (Reg && RegToChain.contains(Reg))
@@ -894,7 +914,7 @@ void MachineSinking::SortIntoUseDefChains(
 
     // Update reg -> chain mappings for all defs.
     for (const MachineOperand &MO : MI->operands()) {
-      if (MO.isReg() && MO.isDef())
+      if (MO.isReg() && MO.isDef() && !MO.isDead())
         RegToChain[MO.getReg()] = ChainID;
     }
   }
@@ -909,7 +929,9 @@ void MachineSinking::SortIntoUseDefChains(
     for (MachineInstr *MI : llvm::reverse(C.Instrs)) {
       TotalLatency += SchedModel.computeInstrLatency(MI, true);
       VisitedMI.insert(MI);
-      for (MachineOperand &MO : MI->defs()) {
+      for (MachineOperand &MO : MI->all_defs()) {
+        if (!MO.isReg() || MO.isDead())
+          continue;
         for (MachineInstr &UseMI : MRI->use_instructions(MO.getReg())) {
           if (VisitedMI.count(&UseMI))
             continue;
@@ -943,7 +965,7 @@ static void calculateCycleLiveIns(const MachineCycle *Cycle,
       if (MI.isDebugInstr())
         continue;
       for (const MachineOperand &MO : MI.operands()) {
-        if (MO.isReg() && MO.isDef() &&
+        if (MO.isReg() && MO.isDef() && !MO.isDead() &&
             Register::isVirtualRegister(MO.getReg()))
           Defs.insert(MO.getReg());
       }
@@ -957,7 +979,7 @@ static void calculateCycleLiveIns(const MachineCycle *Cycle,
       if (MI.isDebugInstr())
         continue;
       for (const MachineOperand &MO : MI.operands()) {
-        if (MO.isReg() && MO.isUse() &&
+        if (MO.isReg() && MO.isUse() && MO.readsReg() &&
             Register::isVirtualRegister(MO.getReg())) {
           Register Reg = MO.getReg();
           if (!Defs.count(Reg)) {
